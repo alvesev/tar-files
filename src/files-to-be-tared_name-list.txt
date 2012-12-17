@@ -1,0 +1,25 @@
+
+##########################
+##
+##  host.domain YYYY-MM-DD
+##
+##  OS Name and Version
+##
+
+#
+#  file name: files-to-be-tared_name-list.txt
+#
+#  This is list of files or directories to be packed.
+#
+#  Each labeled pack must be specified on one line. The line consist of
+#  pack label, space, shell template describing file name/s to be
+#  packed. Lines begining with symbol '#' are ignored. In a line, it's
+#  reminder after the symbol '#' is ignored.
+#
+##
+
+
+# an example
+etc-very /tmp/aaa bbb/*/*.txt # blah blah blah
+etc-all /tmp/aaa bbb/*
+

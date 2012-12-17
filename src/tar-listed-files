@@ -1,0 +1,582 @@
+#!/bin/bash
+
+#
+#  Copyright 2009-2012 Alex Vesev
+#
+#  This file is part of TarFiles.
+#
+#  TarFiles is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  TarFiles is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with TarFiles.  If not, see <http://www.gnu.org/licenses/>.
+#
+##
+
+#  This script will pack listed files into labeled 'tar' containers.
+#
+##
+
+terminalBin="/usr/bin/lxterminal"
+if which "${terminalBin}" 2>/dev/null >/dev/null ; then
+    tty -s
+    [ $? -ne 0 ] \
+        && "${terminalBin}" -e "\"${0}\" \"${@}\"" \
+        && exit ${?}
+fi
+
+declare     dirFinalLocationForTarArchive=""
+declare -r  targetObjectsListSourceName="$( dirname "${0}" )/files-to-be-tared_name-list.txt"
+
+declare -ri noError=0 # Zero is OK
+declare -ri errorMisc=1
+declare -ri undefinedErrorState=253
+declare -ri errorEpic=254
+declare     errorState=${noError}
+
+declare -ri codeSuccess=0
+declare -ri codeFailure=1
+
+declare     thisName=""
+declare     timestamp=""
+declare     dirUserRequestedOutputLocation=""
+declare     whereAmI=""
+declare -a  targetIDArray
+declare -a  targetNameArray
+declare     isHaveNotFound="false"
+declare     logFile="/tmp/log_YYYY-MM-DD_HHMM_S-NNN.log"
+
+
+function printoutAndSetupExampleFile {
+mkdir -p "/tmp/aaa bbb/111"
+mkdir -p "/tmp/aaa bbb/222"
+touch "/tmp/aaa bbb/111/example.txt"
+touch "/tmp/aaa bbb/222/example.txt"
+touch "/tmp/aaa bbb/example.txt"
+
+echo "
+##########################
+##
+##  host.domain YYYY-MM-DD
+##
+##  OS Name and Version
+##
+
+#
+#  file name: $( basename "${targetObjectsListSourceName}" )
+#
+#  This is list of files or directories to be packed.
+#
+#  Each labeled pack must be specified on one line. The line consist of
+#  pack label, space, shell template describing file name/s to be
+#  packed. Lines begining with symbol '#' are ignored. In a line, it's
+#  reminder after the symbol '#' is ignored.
+#
+##
+
+
+# an example
+etc-very /tmp/aaa bbb/*/*.txt # blah blah blah
+etc-all /tmp/aaa bbb/*
+"
+}
+
+function tarTargets {
+    local -r dirForArchivesSaving="${1}"
+    local -r targetIDArrayCapacity="${2}"
+    local -r targetNameArrayCapacity="${3}"
+    shift 3 \
+        ; local -ra targetIDArray=("${@:1:targetIDArrayCapacity}") \
+        ; local -ra targetNameArray=("${@:1+targetIDArrayCapacity}")
+
+    local -r tarDirectoryToOperateIn="/"
+
+    local    tarCommand="false"
+    local    archiveLabel=""
+    local    filesDonors
+    local    fileAcceptorArchive=""
+    local -i idx=0
+
+    for (( idx=0 ; idx<${#targetIDArray[@]} ; idx++ )) ; do
+        fileAcceptorArchive="${dirFinalLocationForTarArchive}/${targetIDArray[idx]}.tar.gz"
+        archiveLabel="${whereAmI}__${targetIDArray[idx]}__${timestamp}"
+        filesDonors="$( healPath "${targetNameArray[idx]}" )"
+
+        echo "INFORMATION:${0}:${LINENO}: Starting processing of '${archiveLabel}'." >> "${logFile}"
+        expandFileNameTemplate "filesDonors" "$( healPath "${targetNameArray[idx]}" )" 2>>"${logFile}" \
+            && tar zcpv -f "${fileAcceptorArchive}" \
+                --dereference --hard-dereference \
+                --label="${archiveLabel}" \
+                --directory "${tarDirectoryToOperateIn}" \
+                "${filesDonors[@]}" \
+                    1>>"${logFile}" 2>>"${logFile}" \
+            ; [ ${?} != 0 ] \
+                && echo "ERROR:${0}:${LINENO}: Job feedback for target with Id '${targetIDArray[idx]}' points to an error." >> "${logFile}"
+        echo "INFORMATION:${0}:${LINENO}: Job done for '${archiveLabel}'." >> "${logFile}"
+        echo -n "." >&2
+    done
+    echo "" >&2
+}
+
+function stripLine {
+    local -r inputLine="${1}"
+
+    local    outputLine=""
+
+    shopt -s extglob
+
+    outputLine="${inputLine}"
+    outputLine="${outputLine/#*([[:space:]])/}" # Strip leading space.
+    outputLine="${outputLine/%\#*/}" # Strip trailing commentary.
+    outputLine="${outputLine/%*([[:space:]])/}" # Strip trailing space.
+
+    echo -n "${outputLine}"
+
+    [ -n "${outputLine}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function pickupTargetNames {
+    local -r containerNameForTargetID="${1}"
+    local -r containerNameForTargetNames="${2}"
+    local -r fileSourceOfNames="${3}"
+
+    local -a outputListIDArray
+    local -a outputNameArray
+    local -a containerWithTargetID
+    local -a containerWithTargetNames
+    local -i idx=0
+
+    idx=0
+    while read singleLine ; do
+        ! singleLine=$( stripLine "${singleLine}" ) \
+            && continue
+        read outputListIDArray[idx] outputNameArray[idx] <<< "${singleLine[@]}"
+        ((idx++))
+    done < "${fileSourceOfNames}"
+
+    ! isNoDuplicates "${outputListIDArray[@]}" \
+        && echo "ERROR:${0}:${LINENO}: Have duplicate labels in list from file '${fileSourceOfNames}'." >&2 \
+        && errorState=${errorMisc}
+    ! isNoDuplicates "${outputNameArray[@]}" \
+        && echo "ERROR:${0}:${LINENO}: Have duplicate name templates in list from file '${fileSourceOfNames}'." >&2 \
+        && errorState=${errorMisc}
+    [ ${errorState} != ${noError} ] \
+        && exit ${errorMisc}
+
+    containerWithTargetID=("${outputListIDArray[@]}")
+    containerWithTargetNames=("${outputNameArray[@]}")
+    eval ${containerNameForTargetID}=\(\"'${containerWithTargetID[@]}'\"\)
+    eval ${containerNameForTargetNames}=\(\"'${containerWithTargetNames[@]}'\"\)
+
+    return ${codeSuccess}
+}
+
+function isNoDuplicates {
+    local -ra providedValuesArray=("${@:1}")
+
+    local     singleValue=""
+    local -a  foundDuplicates
+    local -i  howMuchFound=0
+    local -i  idx=0
+    local -i  idxMax=0
+
+    howMuchFound=0
+    idxMax=${#providedValuesArray[@]}
+    for (( idx=0 ;  idx < $(( idxMax-1 )) ;  idx++ )) ; do
+        for singleValue in "${providedValuesArray[@]:0:$((idx))}" "${providedValuesArray[@]: -$((idxMax-idx-1))}"
+        do
+            [ "${providedValuesArray[idx]}" == "${singleValue}" ] \
+                && ! isHaveValue "${singleValue}" "${foundDuplicates[@]}" \
+                && foundDuplicates[howMuchFound]="${singleValue}" \
+                && ((howMuchFound++))
+        done
+    done
+
+    [ -z "${foundDuplicates[*]}" ] \
+        && return ${codeSuccess}
+
+    echo "INFORMATION:${0}:${LINENO}: Found duplicates:" >&2
+    for singleValue in "${foundDuplicates[@]}" ; do
+        echo "    ${singleValue}" >&2
+    done
+    return ${codeFailure}
+}
+
+function isHaveValue {
+    local -r singleValue="${1}"
+    local -r providedArray="${2}"
+
+    local -i idx=0
+
+    for ((idx=0 ; idx<${#providedArray[@]} ; idx++ )) ; do
+        [ "${singleValue}" == "${providedArray[idx2]}" ] \
+            && return ${codeSuccess}
+    done
+    return ${codeFailure}
+}
+
+function expandFileNameTemplate {
+    #  Here is a trick with IFS value. If IFS is empty, for example,
+    #  then 'ls' or 'for fName in /dir name/file name.*' will
+    #  successfully expand filename template '/dir name/file name.*'
+    #  containing spaces.
+
+    local -r containerNameForExpandedFileNameTemplate="${1}"
+    local -r filenameTemplate="${2}"
+
+    local -a containerWithExpandedFileNameTemplate
+    local    singleObjectName=""
+    local -a foundObjects
+    local    IFS_BACK_COPY=""
+    local -i idx=0
+
+    IFS_BACK_COPY=""
+    IFS=""
+    idx=0
+    for singleObjectName in ${filenameTemplate} ; do
+        if isFileRelatedObjectExist "${singleObjectName}" ; then
+            foundObjects[idx]="${singleObjectName}"
+            ((idx++))
+        else
+            echo "WARNING:${0}:${LINENO}: Nothing found for template '${filenameTemplate}'." >&2
+            isHaveNotFound="true"
+        fi
+    done
+    IFS="${IFS_BACK_COPY}"
+
+    containerWithExpandedFileNameTemplate=("${foundObjects[@]}")
+    eval ${containerNameForExpandedFileNameTemplate}=\(\"'${containerWithExpandedFileNameTemplate[@]}'\"\)
+
+    [ "${isHaveNotFound}" == "true" ] \
+        && echo "WARNING:${0}:${LINENO}: Some targets from list are not found. As list source used '${targetObjectsListSourceName}'. See details in log '${logFile}'." >&2
+
+    [ -n "${foundObjects[*]}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function isFileRelatedObjectExist {
+    local -r fileToBeVerified="${1}"
+
+    # Any kind of file or directory.
+    [ -e "${fileToBeVerified}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function isFileRegularAndExist {
+    local -r fileToBeVerified="${1}"
+
+    [ -f "${fileToBeVerified}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function isDirectoryExist {
+    local -r dirToBeVerified="${1}"
+
+    [ -d "${dirToBeVerified}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function isDirectoryWritable {
+    local -r dirToBeVerified="${1}"
+
+    isDirectoryExist "${dirToBeVerified}" \
+        && [ -w "${dirToBeVerified}" ] \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function setupPathToArchivesLocation {
+    local -r dirRequested="$( healPath "${1}" )"
+
+    local dirDefault="$( healPath "." )/backup_${whereAmI}_${timestamp}"
+
+    dirFinalLocationForTarArchive="${dirRequested}"
+    [ -z "${dirRequested}" ] \
+        && dirFinalLocationForTarArchive="${dirDefault}"
+
+    isDirectoryExist "${dirFinalLocationForTarArchive}" \
+        && isDirectoryWritable "${dirFinalLocationForTarArchive}" \
+        && return ${codeSuccess}
+
+    mkdir -p "${dirFinalLocationForTarArchive}" \
+        && return ${codeSuccess}
+    return ${codeFailure}
+}
+
+function validateSourceOfTargetNames {
+    local -r targetName="${1}"
+
+    [ -f "${targetName}" ] \
+        && return ${codeSuccess}
+
+    echo "ERROR:${0}:${LINENO}: Source of targets to be processed is not found. Error token '${targetName}'." >&2
+    return ${codeFailure}
+}
+
+function initiateEnvironment {
+
+    [ -z "${whereAmI}" ] \
+        && whereAmI="${HOSTNAME}"
+
+    ! setupPathToArchivesLocation "${dirUserRequestedOutputLocation}" \
+        && echo "ERROR:${0}:${LINENO}: Failed to setup requested directory '${dirUserRequestedOutputLocation}'." >&2 \
+        && errorState=${errorMisc}
+
+    [ "${errorState}" != "${noError}" ] \
+        && echo "ERROR:${0}:${LINENO}: Failed while environment initialisation." >&2 \
+        && errorState=${errorMisc}
+    return ${errorState}
+}
+
+function validatePrelaunch {
+    initiateEnvironment
+
+    ! validateSourceOfTargetNames "${targetObjectsListSourceName}" \
+        && echo "ERROR:${0}:${LINENO}: Not found file '${targetObjectsListSourceName}'." >&2 \
+        && errorState=${errorMisc}
+
+    [ ! -d "${dirFinalLocationForTarArchive}" ] \
+        && echo "ERROR:${0}:${LINENO}: Not found directory '${dirFinalLocationForTarArchive}'." >&2 \
+        && errorState=${errorMisc}
+
+    [ "${errorState}" != "${noError}" ] \
+        && echo "ERROR:${0}:${LINENO}: Failed with prelaunch validations." >&2 \
+        && exit ${errorState}
+}
+
+function getThisName {
+    # This function may be more elegant way to heal a path.
+
+    local dName="$( dirname "${0}" )"
+    local fName="$( basename "${0}" )"
+
+    [ "${dName}" == "." ] && dName="$( pwd )"
+    echo "${dName}/${fName}"
+}
+
+function healPath {
+    local name="${1}"
+
+    [ "${name:0:1}" == "\"" ] \
+        || [ "${name:${#name}-1:1}" == "\"" ] \
+        && echo "ERROR:${0}:${LINENO}: Bad name format, double quotes are not allowed. Error token: ${name}" >&2
+
+    case "${name}" in
+    '.')
+        name="./"
+    ;;
+    '~')
+        name="~/"
+    ;;
+    esac
+    case "${name:0:2}" in
+    './')
+        name="$( pwd )/${name:2}"
+    ;;
+    '~/')
+        name="${HOME}/${name:2}"
+    ;;
+    esac
+
+    name="${name%/}" # Cut off trailing '/', if any.
+    echo "${name}"
+}
+
+function healPathAll {
+    local -r inputFileList
+
+    local -i idx=""
+    local -a outputFileList=""
+    local    singleFileName=""
+
+    idx=0
+    for singleFileName in "${inputFileList[@]}" ; do
+        outputFileList[idx]="$( healPath "${singleFileName}" )"
+        ((idx++))
+    done
+
+    echo "${outputFileList}"
+}
+
+function readFeedbackOn {
+    local -r question="${1}"
+    local -r returnCodeYes="0"
+    local -r returnCodeNo="1"
+
+    while : ; do
+        read -p "${question} [y/n]" feedback
+        shopt -s nocasematch
+        case "${feedback}" in
+        y|yes)
+            return "${returnCodeYes}"
+        ;;
+        n|no)
+            return "${returnCodeNo}"
+        ;;
+        *)
+            echo "Enter yes or no."
+        ;;
+        esac
+        shopt -u nocasematch
+    done
+}
+
+function showDoc {
+echo "
+
+This script will try to pick up file names and labels from a file, pack them with the help of 'tar' into several labeled archives.
+
+USAGE IS
+
+    $( basename "${0}" ) action options
+
+ACTIONS
+
+    --create
+
+        Create backup.
+
+    --print-and-setup-example
+
+        Print out example input file. There are created some corresponding example objects in '/tmp' directory.
+
+    --help
+
+        Show some documentation.
+
+OPTIONS
+
+    --input-file=\"/file/with/targets/names/and/labels\"
+
+        File with list of labels and targets names. Not implemented.
+
+        There is hardcoded name '$( basename "${targetObjectsListSourceName}" )'. The file will be searched in a directory with this script.
+
+    --dir-output=\"/directory/name\"
+
+        Where to save the archives to be created. Never tried. If the directory is not specified, it will try to create a labeled subdirectory in a directory with this script.
+
+TarFiles will try to evalute duplicates in the input list - lables and templates. It will not proceed if a duplicate was found.
+
+In the output directory will be created log file with a name like '$( basename "${logFile}" )'.
+
+FILE WITH TARGETS LIST FORMAT
+
+    Targets to be packed must be listed in a file. Each labeled pack must be specified on one line. The line consist of pack label, space, shell template describing file name/s to be packed. Lines begining with symbol '#' are ignored. In a line, it's reminder after the symbol '#' is ignored.
+
+    Examples:
+
+        etc_passwd     /etc/passwd # The passwd file.
+        # Content of /var/log
+        var_log        /var/log/*
+        home_desktops  /home/*/Desktop
+
+COPYRIGHT AND LICENCE:
+
+Copyright © 2009-2012 Alex Vesev. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+
+This is free software: you are free to change and redistribute it. There is NO WARRANTY, to the extent permitted by law.
+"
+}
+
+# # #
+ # #
+# #
+ #
+#
+
+#[ ${UID} != 0 ] \
+    #&& echo "ERROR:${0}:${LINENO}: This script is run NOT as root." >&2 \
+    #&& errorState=${errorMisc}
+
+[ ${#} == 0 ] \
+    && showDoc \
+    && exit ${errorMisc}
+
+declare -r timestamp="$(date '+%Y-%m-%d_%H%M_%S-%N')"
+declare -r thisName="$( getThisName )"
+
+routineName=""
+while [ ${#} != 0 ] ; do
+    argumentName="${1#--}" # Strip leading '--'.
+    argumentName="${argumentName%%=*}" # Strip trailing '=*'
+    argumentValue="${1#*=}" # Strip leading '*='.
+    case "${argumentName}" in
+
+# Actions
+
+    help|h)
+        showDoc
+        exit ${errorState}
+    ;;
+    print-and-setup-example)
+        [ -z "${routineName}" ] \
+            && declare -r routineName="${argumentName}"
+        printoutAndSetupExampleFile
+        exit ${errorState}
+    ;;
+    create)
+        [ -z "${routineName}" ] \
+            && declare -r routineName="${argumentName}"
+        break
+    ;;
+    verify)
+        [ -z "${routineName}" ] \
+            && declare -r routineName="${argumentName}"
+        break
+    ;;
+
+# Options
+
+    dir-output)
+        [ -z "${dirUserRequestedOutputLocation}" ] \
+            && declare -r dirUserRequestedOutputLocation="${argumentValue:-}"
+    ;;
+    *)
+        echo "ERROR:${0}:${LINENO}: Unknown argument name '${argumentName}'." >&2
+    ;;
+    esac
+    shift 1
+done
+validatePrelaunch
+declare -r logFile="${dirFinalLocationForTarArchive}/log_${timestamp}.log"
+
+case "${routineName}" in
+create)
+    echo "Evaluating targets list." >&2
+    pickupTargetNames "targetIDArray" "targetNameArray" "${targetObjectsListSourceName}"
+    echo "Done." >&2
+    echo "Archiving." >&2
+    tarTargets "${dirFinalLocationForTarArchive}" \
+        "${#targetIDArray[@]}" \
+        "${#targetNameArray[@]}" \
+        "${targetIDArray[@]}" "${targetNameArray[@]}"
+    echo "Done." >&2
+;;
+verify)
+    false
+;;
+print-and-setup-example)
+    #printoutAndSetupExampleFile
+    true
+;;
+*)
+    echo "ERROR:${0}:${LINENO}: Unknown routine name '${routineName}'." >&2
+    exit ${errorMisc}
+;;
+esac
+
+exit ${errorEpic}
